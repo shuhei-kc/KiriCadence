@@ -6,11 +6,11 @@ floodgate に放流しながら、自動で定跡を修正し続けるシステ�
 | 部品 | 役割 |
 |---|---|
 | **定跡USIラッパー** (`wrapper/`) | 将棋GUI から見ると1つのエンジン。優先度順に定跡を引き、無ければ本体エンジンに渡す。対局中に自分の評価値が決着水準に達したら、その棋譜を修正タスクとして書き出す |
-| **KiriCondencer** (`makebook/`) | 書き出されたタスクを1件ずつ処理し、定跡を修正し続ける常駐プロセス |
+| **KiriCondenser** (`makebook/`) | 書き出されたタスクを1件ずつ処理し、定跡を修正し続ける常駐プロセス |
 
 設計は [DESIGN.md](DESIGN.md)。
 
-## KiriCondencer — 定跡の自動修正
+## KiriCondenser — 定跡の自動修正
 
 ラッパーが「負けた」と書き出した棋譜から**課題局面**を1つ決め、
 そこを起点に定跡を直す。これを1サイクルとして、タスクが尽きるまで回し続ける。
@@ -70,7 +70,7 @@ KiriCadence/
   engine/      USIエンジン (実行ファイルと評価関数)
   logs/        wrapper.log / decisions.jsonl
   wrapper/     ラッパー本体
-  makebook/    KiriCondencer (定跡の自動修正)
+  makebook/    KiriCondenser (定跡の自動修正)
 ```
 
 ## book/ の命名規約
@@ -143,5 +143,5 @@ YaneuraOu-ScriptCollection からの vendor コピーで、こちらも MIT
   (yaneurao 氏, MIT) — `wrapper/yaneuraou_book_lib.py` は同リポジトリ CommonLib の
   **無改変コピー** ([wrapper/VENDOR.md](wrapper/VENDOR.md))。定跡の学習規則は
   makebook4 の「勝ち手は加算 / 負け手は分岐点まで遡って削除」をそのまま採っており、
-  KiriCondencer のプロセス駆動方式 (子プロセスとして起動し stdin でコマンドを送る) は
+  KiriCondenser のプロセス駆動方式 (子プロセスとして起動し stdin でコマンドを送る) は
   BookMiner に倣っている。
