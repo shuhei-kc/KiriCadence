@@ -130,7 +130,10 @@ class TestIntegration(unittest.TestCase):
         fake = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "fake_engine.py")
         cls.engine_bat = os.path.join(d, "fake_engine.bat")
-        with open(cls.engine_bat, "w", encoding="ascii") as f:
+        # .bat は cmd が OEM コードページで読む。ascii 固定だと
+        # リポジトリのパスに非 ASCII が入っただけで setUpClass ごと落ちる。
+        bat_encoding = "mbcs" if sys.platform == "win32" else "utf-8"
+        with open(cls.engine_bat, "w", encoding=bat_encoding) as f:
             f.write(f'@echo off\r\n"{sys.executable}" "{fake}"\r\n')
 
         cls.log_dir = os.path.join(d, "logs")

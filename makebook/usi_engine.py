@@ -158,12 +158,36 @@ class UsiEngine:
             raise EngineError(f"エンジンへの送信に失敗: {e!r}")
 
     def _readline(self, deadline: float) -> str | None:
+        """1行読む。deadline を過ぎたら None。
+
+        readline() はブロックするので、**呼ぶ前に deadline を
+        見るだけでは黙り込んだエンジンを検知できない**。
+        無人で常駐するので、期限でプロセスを落として
+        readline を EOF で戻す watchdog を張る (ラッパー側の
+        _wait_token と同じ考え方)。
+        """
         proc = self.proc
         if proc is None or proc.stdout is None:
             raise EngineError("エンジンが起動していません")
-        if time.monotonic() > deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return None
-        line = proc.stdout.readline()
+
+        timed_out = threading.Event()
+
+        def _giveup() -> None:
+            timed_out.set()
+            _kill_tree(proc)         # readline を EOF で解放させる
+
+        watchdog = threading.Timer(remaining, _giveup)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            line = proc.stdout.readline()
+        finally:
+            watchdog.cancel()
+        if timed_out.is_set():
+            return None
         if line == "":
             raise EngineError("エンジンが異常終了しました (EOF)")
         return line.strip()
@@ -176,6 +200,25 @@ class UsiEngine:
                 raise EngineError("エンジンの応答待ちがタイムアウトしました")
             if predicate(line):
                 return
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """プロセスを**子孫ごと**落とす。
+
+    .bat 経由で起動すると cmd.exe の下にエンジン本体がぶら下がるので、
+    proc.kill() だけだと孫が生き残って stdout パイプを持ち続ける。
+    すると readline() が解放されず、タイムアウトさせたはずが止まったままになる。
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 def _parse_nodes(line: str) -> int | None:
@@ -208,7 +251,9 @@ def _parse_info(line: str) -> tuple[int, bool] | None:
     if kind == "mate":
         if raw in ("+", "+0"):
             return MATE_SCORE, True
-        if raw == "-":
+        if raw in ("-", "-0"):
+            # int("-0") == 0 なので数値として見ると符号が消える。
+            # mate -0 は「自分が詰んでいる」なので必ず負にする。
             return -MATE_SCORE, True
         try:
             plies = int(raw)

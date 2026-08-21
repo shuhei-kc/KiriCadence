@@ -26,8 +26,21 @@ import yaneuraou_book_lib as ybl
 from book_repo import BookRepository, board_sfen_main
 from config import ConfigError, load_config
 from selector import make_tie_breaker
+from sfen_guard import validate_sfen
 
 import random
+
+
+def _set_sfen_checked(board, sfen: str) -> None:
+    """cshogi の set_sfen は不正な SFEN で**プロセスごと落ちる**。
+
+    try/except では受けられないので、渡す前に必ず検証する。
+    この CLI は手打ちの SFEN を受けるので一番踏みやすい。
+    """
+    error = validate_sfen(sfen)
+    if error:
+        raise ValueError(f"sfen が不正です: {error}")
+    board.set_sfen(sfen)
 
 
 def build_board(position_arg: str | None, sfen_arg: str | None):
@@ -35,7 +48,7 @@ def build_board(position_arg: str | None, sfen_arg: str | None):
     board = cshogi.Board()
     counts: Counter = Counter()
     if sfen_arg:
-        board.set_sfen(sfen_arg.strip())
+        _set_sfen_checked(board, sfen_arg.strip())
         counts[board_sfen_main(board)] += 1
         return board, counts
 
@@ -44,13 +57,17 @@ def build_board(position_arg: str | None, sfen_arg: str | None):
         moves_idx = 1
     elif parts[0] == "sfen":
         moves_idx = parts.index("moves") if "moves" in parts else len(parts)
-        board.set_sfen(" ".join(parts[1:moves_idx]))
+        _set_sfen_checked(board, " ".join(parts[1:moves_idx]))
     else:
         raise ValueError(f"unknown position kind: {parts[0]}")
     counts[board_sfen_main(board)] += 1
     if len(parts) > moves_idx and parts[moves_idx] == "moves":
-        for token in parts[moves_idx + 1:]:
-            board.push_usi(token)
+        for index, token in enumerate(parts[moves_idx + 1:], start=1):
+            # push_usi は指せない手を黙って無視するので自分で検証する
+            move = board.move_from_usi(token)
+            if move == 0 or not board.is_legal(move):
+                raise ValueError(f"{index}手目 {token!r} は非合法です")
+            board.push(move)
             counts[board_sfen_main(board)] += 1
     return board, counts
 

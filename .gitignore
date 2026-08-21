@@ -38,5 +38,8 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
-*.jsonl
 *.bak
+# セッションの作業ログだけを除外する。`*.jsonl` と書くと全階層に効き、
+# 将来 jsonl のデータを置いたときに黙って無視される (decisions.jsonl は
+# logs/ 側で既に除外済み)。
+/*.jsonl

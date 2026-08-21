@@ -513,9 +513,16 @@ class CycleRunner:
                 move = 0
             if move == 0 or not board.is_legal(move):
                 # 定跡の壊れた手で対局を壊さない。その手を消してやり直す。
-                self.report(f"      非合法手を定跡から除去: {usi}")
-                self.book.remove(board_sfen_main(board), usi)
-                continue
+                if self.book.remove(board_sfen_main(board), usi):
+                    self.report(f"      非合法手を定跡から除去: {usi}")
+                    continue
+                # 定跡に無い = エンジンが返した手。消すものが無いので
+                # やり直しても同じ手が返り、同じ局面を延々探索し続ける。
+                # 無人で回るので、この対局は捨てて次へ進む。
+                self.report(f"      エンジンが非合法手を返しました: {usi} "
+                            f"(この対局を打ち切ります)")
+                return GameOutcome(None, "エンジンが非合法手を返した",
+                                   played, len(moves))
 
             played.append(PlayedMove(board_sfen_main(board), usi,
                                      board.turn, source))

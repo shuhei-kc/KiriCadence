@@ -400,7 +400,17 @@ class Wrapper:
             count = 0
             if len(parts) > moves_idx and parts[moves_idx] == "moves":
                 for token in parts[moves_idx + 1:]:
-                    board.push_usi(token)
+                    # cshogi の push_usi は**指せない手を例外なしで黙って
+                    # 無視する**。それに任せると盤面がズレたまま
+                    # tracking_ok が立ち、ズレた局面に対して合法手
+                    # フィルタを掛けることになる → 実局面では非合法な手を
+                    # bestmove で返し得る (反則負け)。必ず自分で検証する。
+                    move = board.move_from_usi(token)
+                    if move == 0 or not board.is_legal(move):
+                        raise ValueError(
+                            f"{count + 1}手目 {token!r} が指せません "
+                            f"(局面: {board_sfen_main(board)})")
+                    board.push(move)
                     counts[board_sfen_main(board)] += 1
                     count += 1
             self.board = board

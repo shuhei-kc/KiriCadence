@@ -8,6 +8,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,7 +22,7 @@ from common import (Config, ConfigError, LearningBook,  # noqa: E402
                     move16_to_usi, position_key)
 from csa_source import GameRecord, SeenStore  # noqa: E402
 from cycle import BLACK, WHITE, CycleRunner, GameOutcome, PlayedMove  # noqa
-from problem import (PositionError, derive_problem,  # noqa: E402
+from problem import (PositionError, Problem, derive_problem,  # noqa: E402
                      open_book_repo, parse_position_command)
 from tasks import KIND_KIFU, KIND_PROBLEM, TaskQueue  # noqa: E402
 from usi_engine import SearchResult, _parse_info  # noqa: E402
@@ -1350,3 +1351,115 @@ class TestHighPriorityMerge(unittest.TestCase):
         book = LearningBook("zero", 32)
         pos, moves = self._runner(book, priority="-1").merge_high_priority_books()
         self.assertEqual((pos, moves), (0, 0))
+
+
+class TestMateScoreSign(unittest.TestCase):
+    """mate -0 は「自分が詰んでいる」なので負でなければならない。
+
+    int("-0") == 0 なので、数値として見ると符号が消える (レビュー指摘5)。
+    """
+
+    def test_mate_minus_zero_is_a_loss(self):
+        from usi_engine import MATE_SCORE, _parse_info
+        self.assertEqual(_parse_info("info score mate -0"),
+                         (-MATE_SCORE, True))
+
+    def test_mate_plus_zero_is_a_win(self):
+        from usi_engine import MATE_SCORE, _parse_info
+        self.assertEqual(_parse_info("info score mate +0"),
+                         (MATE_SCORE, True))
+
+    def test_mate_sign_matches_task_emitter(self):
+        """ラッパー側 (task_emitter) と符号の解釈を食い違わせない。"""
+        from usi_engine import _parse_info
+        import task_emitter
+        for line in ("info score mate -0", "info score mate -3",
+                     "info score mate 3", "info score cp -250"):
+            mine = _parse_info(line)
+            theirs = task_emitter.parse_score(line)
+            self.assertIsNotNone(mine, line)
+            self.assertEqual(mine[0] < 0, theirs[0] < 0, line)
+
+    def test_mate_plies_still_scale(self):
+        from usi_engine import MATE_SCORE, _parse_info
+        self.assertEqual(_parse_info("info score mate 3"),
+                         (MATE_SCORE - 3, True))
+        self.assertEqual(_parse_info("info score mate -3"),
+                         (-(MATE_SCORE - 3), True))
+
+
+class TestIllegalEngineMove(unittest.TestCase):
+    """エンジンが非合法手を返しても無限ループしない (レビュー指摘4)。
+
+    定跡由来なら削除してやり直せるが、エンジン由来だと消すものが無く、
+    同じ局面を延々探索し続ける。無人で回るので必ず抜けること。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_engine_illegal_move_aborts_the_game(self):
+        book = LearningBook("zero", 32)
+        # 常に同じ非合法手を返し続けるエンジン
+        engine = StubEngine([(0, "9g9e")] * 50)
+        runner = make_runner(self.tmp.name, book, engine)
+        problem = Problem(cshogi.Board().sfen(),
+                          board_sfen_main(cshogi.Board()), "test")
+        outcome = runner.play_game(problem)
+        self.assertIsNone(outcome.winner)
+        self.assertIn("非合法手", outcome.reason)
+        # 打ち切っているので、探索回数が青天井になっていないこと
+        self.assertLess(len(engine.calls), 5)
+
+    def test_illegal_book_move_is_removed_and_play_continues(self):
+        """定跡由来の非合法手は従来どおり削除してやり直す。"""
+        book = LearningBook("zero", 32)
+        start = board_sfen_main(cshogi.Board())
+        book.add(start, "9g9e", 1)          # 非合法な定跡手
+        engine = StubEngine([(0, "7g7f")] * 400)
+        runner = make_runner(self.tmp.name, book, engine, max_ply=4)
+        problem = Problem(cshogi.Board().sfen(), start, "test")
+        outcome = runner.play_game(problem)
+        self.assertNotIn("9g9e", book.get(start))    # 消えている
+        # 削除してやり直し、エンジンに聞きに行けていること
+        self.assertGreaterEqual(len(engine.calls), 1)
+        self.assertGreater(outcome.ply, 0)
+
+
+class TestEngineTimeout(unittest.TestCase):
+    """沈黙したエンジンでタイムアウトする (レビュー指摘3)。
+
+    readline() はブロックするので、呼ぶ前に deadline を見るだけでは
+    永久に止まる。無人で常駐するので必ず抜けること。
+    """
+
+    def _silent_engine(self, tmpdir):
+        """stdin を読むだけで何も返さないプロセスを USI エンジンに見せかける。"""
+        script = os.path.join(tmpdir, "silent.py")
+        with open(script, "w", encoding="ascii") as f:
+            f.write("import sys\n"
+                    "for _ in sys.stdin:\n"
+                    "    pass\n")
+        bat = os.path.join(tmpdir, "silent.bat")
+        with open(bat, "w", encoding="utf-8") as f:
+            f.write(f'@echo off\r\n"{sys.executable}" "{script}"\r\n')
+        return bat
+
+    @unittest.skipUnless(sys.platform == "win32", "bat 起動は Windows 前提")
+    def test_start_times_out_instead_of_hanging(self):
+        from usi_engine import EngineError, UsiEngine
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = UsiEngine(self._silent_engine(tmpdir), "utf-8")
+            started = time.monotonic()
+            try:
+                with self.assertRaises(EngineError):
+                    engine.start(timeout=2.0)
+            finally:
+                try:
+                    engine.quit()
+                except Exception:
+                    pass
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 30.0,
+                            "沈黙したエンジンで止まったままになっている")

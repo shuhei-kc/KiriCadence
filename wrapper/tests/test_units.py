@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import Counter
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -971,3 +972,83 @@ def io_lines(lines):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPositionTracking(unittest.TestCase):
+    """position の指し手追跡 (レビュー指摘1)。
+
+    cshogi の push_usi は**指せない手を例外なしで黙って無視する**ので、
+    それに任せると盤面がズレたまま追跡成功と判定され、ズレた局面に
+    合法手フィルタを掛けて非合法な bestmove を返し得る。
+    """
+
+    def _relay(self):
+        relay = main_mod.Wrapper.__new__(main_mod.Wrapper)
+        relay.log = lambda msg: None
+        relay.tracking_ok = False
+        relay.board = cshogi.Board()
+        relay.ply = 0
+        relay.position_counts = Counter()
+        return relay
+
+    def test_cshogi_push_usi_silently_ignores_illegal(self):
+        """前提の確認 — ここが変われば下の対策も見直す。"""
+        board = cshogi.Board()
+        board.push_usi("7g7f")
+        before = board.sfen()
+        board.push_usi("7g7f")          # 同じ手は指せない
+        self.assertEqual(board.sfen(), before)   # 例外も出ず、盤面も動かない
+
+    def test_illegal_move_marks_tracking_failed(self):
+        relay = self._relay()
+        relay._track_position(
+            "position startpos moves 7g7f 3c3d 7g7f 8c8d".split())
+        self.assertFalse(relay.tracking_ok)
+
+    def test_legal_moves_are_tracked(self):
+        relay = self._relay()
+        relay._track_position("position startpos moves 7g7f 3c3d".split())
+        self.assertTrue(relay.tracking_ok)
+        self.assertEqual(relay.ply, 2)
+        self.assertEqual(relay.board.turn, cshogi.BLACK)
+
+    def test_repetition_counts_survive(self):
+        """千日手判定 (§5.1) の出現回数が壊れていないこと。"""
+        relay = self._relay()
+        relay._track_position(
+            "position startpos moves 7g7f 3c3d 8h7g 2b3c "
+            "7g8h 3c2b 8h7g 2b3c 7g8h 3c2b".split())
+        self.assertTrue(relay.tracking_ok)
+        self.assertGreaterEqual(
+            max(relay.position_counts.values()), 3)
+
+
+class TestReplaySfenGuard(unittest.TestCase):
+    """replay.py も検証してから set_sfen する (レビュー指摘2)。
+
+    cshogi の set_sfen は不正 SFEN でプロセスごと落ちるため、
+    例外にならず exit=134 になる。手打ちするCLIなので一番踏みやすい。
+    """
+
+    def test_broken_sfen_raises_instead_of_crashing(self):
+        import replay
+        with self.assertRaises(ValueError):
+            replay.build_board(None, "lnsgkgsnl/1r5b1/pppppppp/9/9/9/"
+                                     "PPPPPPPPP/1B5R1/LNSGKGSNL b - 1")
+
+    def test_broken_sfen_in_position_form(self):
+        import replay
+        with self.assertRaises(ValueError):
+            replay.build_board("sfen lnsgkgsnl/1r5b1/pppppppp/9/9/9/"
+                               "PPPPPPPPP/1B5R1/LNSGKGSNL b - 1", None)
+
+    def test_illegal_move_raises(self):
+        import replay
+        with self.assertRaises(ValueError):
+            replay.build_board("startpos moves 7g7f 7g7f", None)
+
+    def test_valid_input_still_works(self):
+        import replay
+        board, counts = replay.build_board("startpos moves 7g7f 3c3d", None)
+        self.assertEqual(board.turn, cshogi.BLACK)
+        self.assertEqual(len(counts), 3)
