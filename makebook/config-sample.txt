@@ -1,0 +1,32 @@
+# Condenser 設定サンプル
+#
+# 使い方: このファイルを config.txt に複製して、環境に合わせて書き換える。
+# config.txt は .gitignore で除外されている。
+#
+# 最低限、次の2つは自分の環境に合わせること:
+#   CsaDbPath  … KiriCompass の棋譜DB (読み取り専用で開く)
+#   EnginePath … やねうら王系エンジンの実行ファイル
+
+CsaDbPath           C:\shogi\KiriCompass\data\csa.db
+EnginePath          engine\suisho11plus\YaneuraOu_SFNN_halfka2_1024_7_64_k3k3-V970DEV_AVX512.exe
+BookDir             ..\book
+TargetBook          100_x_book.db
+StateDbPath         state.db
+LockPath            condenser.lock
+TaskDir             tasks
+LogDir              logs
+PrecedentGames      10
+AnalysisNodes       1000000
+DecisiveEval        1000
+SelfPlayNodes       10000000
+ResignValue         334
+WinStreak           3
+DrawWinner          white
+MaxPly              320
+EngineThreads       4
+EngineHash          4096
+EngineEncoding      utf-8
+NameFilters         Condenser
+ValueMode           zero
+BookDepth           32
+MergeBookPriority   0

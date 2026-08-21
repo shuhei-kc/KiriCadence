@@ -1,0 +1,22 @@
+# KiriCadence 設定サンプル
+#
+# 使い方: このファイルを config.txt に複製して、環境に合わせて書き換える。
+# config.txt は .gitignore で除外されている。
+#
+# 形式はやねうら王 Option 系の `名前 値` (1行1項目)。# 始まりはコメント。
+# 相対パスはこのファイルの場所が基準。
+# BookDir / BookMinDepth / TieBreak は usinewgame ごとに再読込される。
+
+EnginePath    engine/suisho11plus/YaneuraOu_SFNN_halfka2_1024_7_64_k3k3-V970DEV_AVX512.exe
+BookDir       book
+BookMinDepth  2
+TieBreak      deep
+LogDir        logs
+EngineEncoding utf-8
+
+# 定跡修正システムへの連携: 対局中に自分の評価値が決着水準に達したら、
+# 実際の終局を待たずその時点の棋譜をタスクとして書き出す (1対局1回)。
+# TaskEmitOn: loss=負け側のときだけ(既定) / win=勝ち側だけ / both=両方
+TaskDir       makebook/tasks
+TaskEvalThreshold 1000
+TaskEmitOn    loss
