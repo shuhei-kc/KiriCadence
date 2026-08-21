@@ -56,8 +56,13 @@ KiriCadence は「floodgate に放流しながら、自動で定跡を修正し�
 
 ## 2. 前提・依存
 
-- Windows / `py -3.12` (本PCでは 3.12 を徹底)。
-- **cshogi + numpy** (py -3.12 にインストール済みであることを確認済み)。
+- **Python 3.10 以上**。下限は KiriCompass に合わせている
+  (向こうの GUI が macOS 同梱 3.9 の tkinter 不具合で 3.10+ 必須なため、
+  プロジェクト間で環境を分けない)。コード側に 3.11+ 限定の機能は
+  使っていない。
+- **本PCでは `py -3.12` を徹底**する (cshogi を入れてあるのが 3.12 のため)。
+  同梱の `.bat` も 3.12 を直書きしている。
+- **cshogi + numpy**。
   .ybb の照会キーが PackedSfen (cshogi のバイナリ局面表現) であるため、
   .ybb 対応には cshogi が事実上必須。局面追跡・合法手検証にも使う。
   custom_engine3 の自前 board.py は廃止する。

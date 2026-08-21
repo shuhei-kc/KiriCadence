@@ -53,7 +53,9 @@ copy makebook\config-sample.txt makebook\config.txt
 | 定跡ファイル | `book/` | 命名規約は下記。同梱していない |
 | 棋譜DB (`csa.db`) | 任意 | `CsaDbPath` で指す。定跡修正機能を使う場合のみ |
 
-依存は `py -3.12` + cshogi + numpy。
+依存は **Python 3.10 以上** + cshogi + numpy。
+同梱の `.bat` は `py -3.12` を呼ぶので、別のバージョンを使うなら
+そこを書き換える。
 
 ## 使い方
 
@@ -117,7 +119,7 @@ py -3.12 wrapper\replay.py --check-book
 py -3.12 -m unittest discover -s wrapper\tests
 ```
 
-依存: `py -3.12` + cshogi + numpy。定跡読み書きは
+依存: Python 3.10 以上 + cshogi + numpy。定跡読み書きは
 `wrapper/yaneuraou_book_lib.py` (YaneuraOu-ScriptCollection CommonLib の
 vendor コピー、[wrapper/VENDOR.md](wrapper/VENDOR.md) 参照) を使用。
 

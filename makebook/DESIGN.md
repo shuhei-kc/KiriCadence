@@ -71,7 +71,7 @@ KiriCadence/
     tests/
 ```
 
-- 依存は wrapper と同じ: `py -3.12` + cshogi + numpy。盤面は **cshogi のみ**
+- 依存は wrapper と同じ: Python 3.10 以上 + cshogi + numpy。盤面は **cshogi のみ**
   (attic の Board.py 系は使わない)。定跡の読み書きは
   `wrapper/yaneuraou_book_lib.py` (= BookMiner と同系の実装) に一本化。
 - wrapper のモジュールは `sys.path` に `../wrapper` を足して import する。
