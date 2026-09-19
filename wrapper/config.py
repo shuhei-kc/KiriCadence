@@ -10,11 +10,14 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, replace
 
 CONFIG_ENV = "KIRICADENCE_CONFIG"
 
-TIE_BREAK_CHOICES = ("deep", "random", "first")
+#: 代表的な TieBreak の値。deep{n} (n は1以上の整数。deep1 = deep) も受け付ける。
+TIE_BREAK_CHOICES = ("deep2", "deep", "random", "first")
+_DEEP_N = re.compile(r"deep([1-9][0-9]*)")
 
 #: 既定値 (EnginePath のみ必須)
 DEFAULTS = {
@@ -23,7 +26,7 @@ DEFAULTS = {
     "LogDir": "logs",
     "BookDir": "book",
     "BookMinDepth": "1",
-    "TieBreak": "deep",
+    "TieBreak": "deep2",
     # 定跡修正システムへの連携 (空なら無効)。対局中に自分の評価値が
     # TaskEvalThreshold を超えたら、その時点の棋譜をタスクとして書き出す。
     "TaskDir": "",
@@ -118,9 +121,13 @@ def _validate_emit_on(raw: str) -> str:
 
 def _validate_tie_break(raw: str) -> str:
     value = raw.lower()
+    match = _DEEP_N.fullmatch(value)
+    if match:
+        return "deep" if match.group(1) == "1" else value
     if value not in TIE_BREAK_CHOICES:
         raise ConfigError(
-            f"TieBreak は {'/'.join(TIE_BREAK_CHOICES)} のいずれか: {raw!r}")
+            f"TieBreak は {'/'.join(TIE_BREAK_CHOICES)} または deep{{n}} "
+            f"(n は1以上の整数) のいずれか: {raw!r}")
     return value
 
 

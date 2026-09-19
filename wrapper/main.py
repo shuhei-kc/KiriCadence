@@ -449,6 +449,8 @@ class Wrapper:
         if hit.tie_candidates > 1:
             tie = (f" tie={hit.tie_candidates}@第{hit.decided_at}応手"
                    if hit.decided_at else f" tie={hit.tie_candidates}")
+            if hit.tie_reason:
+                tie += f"({hit.tie_reason})"
         self.log(f"[Book] {hit.file_name}: {hit.usi} (value={hit.value} "
                  f"depth={hit.depth}{' flip' if hit.flipped else ''}{tie})")
         self.decisions.hit(sfen_main, self.ply, side, hit,

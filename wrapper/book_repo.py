@@ -123,6 +123,8 @@ class BookHit:
     #: タイブレークで選ばれた1手にすぎないので、「定跡どおりか」を見る
     #: 用途ではこちらと突き合わせる。
     candidates: tuple[str, ...] = ()
+    #: タイブレークの決め方 (selector の reason。1手なら空)。§9.2
+    tie_reason: str = ""
 
 
 def order_key(info: BookFileInfo) -> tuple:
@@ -307,20 +309,20 @@ class BookRepository:
             return reason_direct if raw_direct is not None else reason_flip
 
         if len(survivors) == 1:
-            chosen, decided_at = survivors[0], 0
+            chosen, decided_at, reason = survivors[0], 0, ""
         else:
             ctx = ProbeContext(full_sfen,
                                self._reply_prober(probe), rng)
-            chosen, decided_at = tie_breaker.choose(survivors, ctx)
+            chosen, decided_at, reason = tie_breaker.choose(survivors, ctx)
         if trace:
             tie = (f" (同値{len(survivors)}手, tie={tie_breaker.name}"
                    + (f", 第{decided_at}応手で決定" if decided_at else "")
-                   + ")") if len(survivors) > 1 else ""
+                   + f", {reason})") if len(survivors) > 1 else ""
             trace(f"{info.name}: 採用 {chosen.usi} value={chosen.value} "
                   f"depth={chosen.depth}{' flip' if flipped else ''}{tie}")
         return BookHit(chosen.usi, chosen.value, chosen.depth, flipped,
                        info.name, len(survivors), decided_at,
-                       tuple(c.usi for c in survivors))
+                       tuple(c.usi for c in survivors), reason)
 
     def _survivors(self, raw_moves, flip: bool, legal: set[str],
                    min_depth: int, name: str
