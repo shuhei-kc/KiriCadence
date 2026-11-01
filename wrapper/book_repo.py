@@ -21,7 +21,7 @@ import cshogi  # type: ignore
 import yaneuraou_book_lib as ybl
 from file_swap import open_shared
 from flip import flipped_move, flipped_sfen_main
-from selector import Candidate, ProbeContext
+from selector import Candidate, ProbeContext, selection_scores
 
 #: 定跡としては指せない終端手 (parse_book_move が resign→none に正規化する
 #: ため none/null/win で足りるが、生の値も念のため含める)
@@ -123,6 +123,8 @@ class BookHit:
     #: タイブレークで選ばれた1手にすぎないので、「定跡どおりか」を見る
     #: 用途ではこちらと突き合わせる。
     candidates: tuple[str, ...] = ()
+    #: タイブレークの決め方 (selector の reason。1手なら空)。§9.2
+    tie_reason: str = ""
 
 
 def order_key(info: BookFileInfo) -> tuple:
@@ -202,6 +204,7 @@ class BookRepository:
     def probe(self, board, min_depth: int, tie_breaker,
               rng: random.Random | None = None,
               trace: Callable[[str], None] | None = None,
+              depth_bonus: float = 0,
               ) -> tuple[BookHit | None, dict[str, str]]:
         """現局面の採用手を探す。(BookHit または None, ファイル別miss内訳)。
 
@@ -235,7 +238,7 @@ class BookRepository:
             try:
                 result = self._probe_one(probe, info, target, full_sfen,
                                          legal, min_depth, tie_breaker, rng,
-                                         trace)
+                                         trace, depth_bonus)
             except UnsortedBookError as e:
                 self._unsorted.add(info.path)
                 misses[info.name] = MISS_UNSORTED
@@ -263,11 +266,11 @@ class BookRepository:
     def _probe_one(self, probe, info: BookFileInfo, target: str,
                    full_sfen: str, legal: set[str], min_depth: int,
                    tie_breaker, rng: random.Random,
-                   trace: Callable[[str], None] | None):
+                   trace: Callable[[str], None] | None, depth_bonus: float = 0):
         """1ファイルの照会。BookHit か miss理由 (str) を返す (§5.2-5.3)。"""
         raw_direct = self._probe_checked(probe, target)
         survivors, reason_direct = (
-            self._survivors(raw_direct, False, legal, min_depth, info.name)
+            self._survivors(raw_direct, False, legal, min_depth, info.name, depth_bonus)
             if raw_direct is not None else ([], None))
         flipped = False
         if trace and raw_direct is not None:
@@ -291,7 +294,7 @@ class BookRepository:
                     raw_flip = None
             if raw_flip is not None:
                 survivors, reason_flip = self._survivors(
-                    raw_flip, True, legal, min_depth, info.name)
+                    raw_flip, True, legal, min_depth, info.name, depth_bonus)
                 flipped = bool(survivors)
                 if trace:
                     trace(f"{info.name}: flipヒット {len(raw_flip)}手 → "
@@ -307,29 +310,30 @@ class BookRepository:
             return reason_direct if raw_direct is not None else reason_flip
 
         if len(survivors) == 1:
-            chosen, decided_at = survivors[0], 0
+            chosen, decided_at, reason = survivors[0], 0, ""
         else:
             ctx = ProbeContext(full_sfen,
-                               self._reply_prober(probe), rng)
-            chosen, decided_at = tie_breaker.choose(survivors, ctx)
+                               self._reply_prober(probe), rng, depth_bonus)
+            chosen, decided_at, reason = tie_breaker.choose(survivors, ctx)
         if trace:
             tie = (f" (同値{len(survivors)}手, tie={tie_breaker.name}"
                    + (f", 第{decided_at}応手で決定" if decided_at else "")
-                   + ")") if len(survivors) > 1 else ""
+                   + f", {reason})") if len(survivors) > 1 else ""
             trace(f"{info.name}: 採用 {chosen.usi} value={chosen.value} "
                   f"depth={chosen.depth}{' flip' if flipped else ''}{tie}")
         return BookHit(chosen.usi, chosen.value, chosen.depth, flipped,
                        info.name, len(survivors), decided_at,
-                       tuple(c.usi for c in survivors))
+                       tuple(c.usi for c in survivors), reason)
 
     def _survivors(self, raw_moves, flip: bool, legal: set[str],
-                   min_depth: int, name: str
+                   min_depth: int, name: str, depth_bonus: float = 0
                    ) -> tuple[list[Candidate], str | None]:
         """§5.3 のフィルタ。(生き残り, 空のときの理由)。
 
         1. 終端手を除く (flip時は反転できない手も除く)
         2. 非合法手を除く (破損定跡による反則負けを防ぐ最後の砦)
-        3. value 最大の集合を取り、depth < min_depth を除く。
+        3. 選択用スコア最大の集合を取り、depth < min_depth を除く。
+           元の最善valueが負なら value + depth_bonus * depth、それ以外はvalue。
            「depthが足りないのでvalue 2番手を指す」ことはしない (§5.3)。
         """
         if not raw_moves:
@@ -358,8 +362,9 @@ class BookRepository:
         if not legal_cands:
             return [], MISS_ILLEGAL_ONLY
 
-        best_value = max(c.value for c in legal_cands)
-        best = [c for c in legal_cands if c.value == best_value]
+        scores = selection_scores(legal_cands, depth_bonus)
+        best_score = max(scores)
+        best = [c for c, score in zip(legal_cands, scores) if score == best_score]
         deep_enough = [c for c in best if c.depth >= min_depth]
         if not deep_enough:
             return [], MISS_DEPTH_GATE

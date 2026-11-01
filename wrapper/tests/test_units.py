@@ -87,6 +87,17 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(config_mod.ConfigError):
             self._load("EnginePath x\nTieBreak sometimes\n")
 
+    def test_tie_break_deep_n(self):
+        cfg, _ = self._load("EnginePath x\n")
+        self.assertEqual(cfg.tie_break, "deep2")          # 既定
+        for raw, expected in (("Deep2", "deep2"), ("deep3", "deep3"),
+                              ("deep1", "deep"), ("deep", "deep")):
+            cfg, _ = self._load(f"EnginePath x\nTieBreak {raw}\n")
+            self.assertEqual(cfg.tie_break, expected, raw)
+        for raw in ("deep0", "deep02", "deep2.5", "deepx", "deep-1"):
+            with self.subTest(raw=raw), self.assertRaises(config_mod.ConfigError):
+                self._load(f"EnginePath x\nTieBreak {raw}\n")
+
     def test_missing_engine_path_warns_but_loads(self):
         cfg, warnings = self._load("BookMinDepth 1\n")
         self.assertEqual(cfg.engine_path, "")
@@ -477,6 +488,130 @@ class TestTieBreak(unittest.TestCase):
             picked.add(hit.usi)
         self.assertEqual(picked, {"7g7f", "2g2f", "1g1f"})
 
+    def _write_profiles(self, root_sfen: str, moves: list[str],
+                        profiles: list[list[int]], value: int = 50) -> None:
+        """root で moves が同値 (value)。各手を指した先の応手 value 列を
+        profiles で与える (指し手は合法手から順に割り当てる)。"""
+        root = cshogi.Board(root_sfen)
+        blocks = {board_sfen_main(root): [f"{m} none {value} 5" for m in moves]}
+        for move, profile in zip(moves, profiles):
+            child = cshogi.Board(root_sfen)
+            child.push_usi(move)
+            legal = [cshogi.move_to_usi(m) for m in child.legal_moves]
+            blocks[board_sfen_main(child)] = [
+                f"{usi} none {v} 5" for usi, v in zip(legal, profile)]
+        write_db(os.path.join(self.dir, "000_x_profiles.db"), blocks)
+        self.repo.refresh(self.dir)
+
+    def test_deep2_real_example_prefers_8d_pawn(self):
+        """実定跡 (700_b_peta1501plus.db) の同率 -67 の2手と応手列。
+
+        deep は第4応手 (16 と 24) の1か所だけで △3二金 を選ぶが、
+        第5応手以降はほぼすべて △8四歩 の方が小さい。deep2 は第5・6応手の
+        2連続で △8四歩 に決める。"""
+        root = "lnsgkgsnl/1r5b1/ppppppppp/9/9/7P1/PPPPPPP1P/1B5R1/LNSGKGSNL w - 2"
+        gold32 = [67, 67, 35, 16, 16, 15, 14, 10, 8, 8, 7, 2, -4, -7, -15, -32,
+                  -35, -35, -36, -36, -41, -78, -103, -110, -114, -114]
+        pawn84 = [67, 67, 35, 24, 15, 14, 13, 8, 3, 2, 1, -33, -36, -41, -58,
+                  -61, -67, -73, -74, -95, -146, -155, -710]
+        self._write_profiles(root, ["4a3b", "8c8d"], [gold32, pawn84], -67)
+        board = cshogi.Board(root)
+        hit, _ = self.repo.probe(board, 1, make_tie_breaker("deep"),
+                                 random.Random(0))
+        self.assertEqual((hit.usi, hit.decided_at, hit.tie_reason),
+                         ("4a3b", 4, "deep"))
+        hit, _ = self.repo.probe(board, 1, make_tie_breaker("deep2"),
+                                 random.Random(0))
+        self.assertEqual((hit.usi, hit.decided_at, hit.tie_reason),
+                         ("8c8d", 6, "run"))
+
+    def test_deep2_pair_falls_back_to_deep(self):
+        """2連続の差がつかなければ、その2手を従来 deep で比べる。"""
+        hit = self.probe("deep2")     # [10, -5] と [10, -20]: 差は1か所だけ
+        self.assertEqual((hit.usi, hit.decided_at, hit.tie_reason),
+                         ("7g7f", 2, "pair_fallback"))
+
+    def test_deep2_cycle_falls_back_to_deep_on_all_known(self):
+        """deep2 の勝ち負けが循環したら、全既知候補を従来 deep で選ぶ。"""
+        a = [201, 200, 200, 193, 143, 108, 88, 86]
+        b = [201, 201, 200, 200, 127, 120, 81, 80, 3]
+        c = [201, 201, 200, 200, 124, 113, 105, 78]
+        moves = ["2g2f", "7g7f", "1g1f"]
+        start = cshogi.Board().sfen()
+        for order in ([0, 1, 2], [2, 0, 1], [1, 2, 0]):
+            self._write_profiles(start, [moves[i] for i in order],
+                                 [[a, b, c][i] for i in order])
+            hit, _ = self.repo.probe(board_from(), 1,
+                                     make_tie_breaker("deep2"),
+                                     random.Random(0))
+            self.assertEqual((hit.usi, hit.tie_reason),
+                             ("2g2f", "global_fallback"))   # 従来 deep の最良
+
+    def test_deep2_candidate_beating_all_wins_despite_cycle(self):
+        a = [201, 200, 200, 193, 143, 108, 88, 86]
+        b = [201, 201, 200, 200, 127, 120, 81, 80, 3]
+        c = [201, 201, 200, 200, 124, 113, 105, 78]
+        d = [201, 128, 45, 2, -8]
+        self._write_profiles(cshogi.Board().sfen(),
+                             ["2g2f", "7g7f", "1g1f", "9g9f"], [a, b, c, d])
+        hit, _ = self.repo.probe(board_from(), 1, make_tie_breaker("deep2"),
+                                 random.Random(0))
+        self.assertEqual((hit.usi, hit.decided_at, hit.tie_reason),
+                         ("9g9f", 3, "run"))
+
+    def test_deep2_equal_profiles_keep_book_order(self):
+        self._write_profiles(cshogi.Board().sfen(), ["7g7f", "2g2f"],
+                             [[10, -5], [10, -5]])
+        hit, _ = self.repo.probe(board_from(), 1, make_tie_breaker("deep2"),
+                                 random.Random(0))
+        self.assertEqual((hit.usi, hit.tie_reason), ("7g7f", "global_fallback"))
+
+    def test_deep2_unknown_replies_same_as_deep(self):
+        """定跡外の候補は最下位、全候補で応手が引けなければ抽選 (deep と同じ)。"""
+        b26 = board_from("2g2f")
+        write_db(os.path.join(self.dir, "000_b_tied.db"), {
+            board_sfen_main(board_from()): [
+                "7g7f none 50 5", "2g2f none 50 5"],
+            board_sfen_main(b26): ["8c8d none 10 5"],
+        })
+        self.repo.refresh(self.dir)
+        hit, _ = self.repo.probe(board_from(), 1, make_tie_breaker("deep2"),
+                                 random.Random(0))
+        self.assertEqual((hit.usi, hit.decided_at, hit.tie_reason),
+                         ("2g2f", 1, "only_known"))
+        write_db(os.path.join(self.dir, "000_b_tied.db"), {
+            board_sfen_main(board_from()): [
+                "7g7f none 0 32", "2g2f none 0 32", "1g1f none 0 32"],
+        })
+        self.repo.refresh(self.dir)
+        picked = {self.repo.probe(board_from(), 1, make_tie_breaker("deep2"),
+                                  random.Random(seed))[0].usi
+                  for seed in range(40)}
+        self.assertEqual(picked, {"7g7f", "2g2f", "1g1f"})
+
+    def test_compare_replies_run(self):
+        import itertools
+        from selector import _compare_replies, _compare_replies_run
+        vectors = [sorted(p, reverse=True) for size in range(1, 4)
+                   for p in itertools.product((-1, 0, 1), repeat=size)]
+        for x, y in itertools.product(vectors, repeat=2):   # n=1 は従来 deep
+            self.assertEqual(_compare_replies_run(x, y, 1)[0],
+                             _compare_replies(x, y))
+        # 同値の順位で連続は切れる
+        self.assertEqual(_compare_replies_run([10, 7, 5], [11, 7, 6], 2),
+                         (-1, False))
+        # n を増やすと決まる場所が変わり、結論が逆になることもある
+        x, y = [100, 90, 80, 70, 60], [101, 91, 79, 69, 59]
+        self.assertEqual(_compare_replies_run(x, y, 2), (-2, True))
+        self.assertEqual(_compare_replies_run(x, y, 3), (5, True))
+        self.assertEqual(_compare_replies_run(x, y, 4), (-1, False))
+
+    def test_tie_breaker_names(self):
+        self.assertEqual(make_tie_breaker("deep2").name, "deep2")
+        self.assertEqual(make_tie_breaker("deep3").name, "deep3")
+        self.assertEqual(make_tie_breaker("deep").name, "deep")
+        self.assertEqual(make_tie_breaker("deep1").name, "deep")
+
     def test_deep_stays_deterministic_when_replies_exist(self):
         """応手が引ける局面では従来どおり決定的に選ぶ (抽選しない)。"""
         b26, b76 = board_from("2g2f"), board_from("7g7f")
@@ -518,8 +653,9 @@ class TestDecisionLogger(unittest.TestCase):
             path = os.path.join(d, "decisions.jsonl")
             logger = DecisionLogger(path)
             logger.newgame()
-            hit = BookHit("2g2f", 10, 5, False, "000_b_a.db", 2, 1)
-            logger.hit("sfen_x", 4, "b", hit, "deep")
+            hit = BookHit("2g2f", 10, 5, False, "000_b_a.db", 2, 6,
+                          ("2g2f", "7g7f"), "run")
+            logger.hit("sfen_x", 4, "b", hit, "deep2")
             logger.miss("sfen_y", 5, "w", files={"000_w_a.db": "no_entry"})
             logger.miss("sfen_z", 6, "b", reason="repetition_guard")
             logger.gameover("win")
@@ -530,7 +666,9 @@ class TestDecisionLogger(unittest.TestCase):
         expected_id = f"{logger.instance_id}-0001"
         self.assertTrue(all(r["game_id"] == expected_id for r in rows))
         self.assertEqual(rows[1]["move"], "2g2f")
-        self.assertEqual(rows[1]["tie"], "deep")
+        self.assertEqual(rows[1]["tie"], "deep2")
+        self.assertEqual(rows[1]["decided_at"], 6)
+        self.assertEqual(rows[1]["tie_reason"], "run")
         self.assertEqual(rows[2]["files"], {"000_w_a.db": "no_entry"})
         self.assertEqual(rows[3]["reason"], "repetition_guard")
         self.assertEqual(rows[4]["result"], "win")

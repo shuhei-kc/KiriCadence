@@ -63,6 +63,7 @@ class Wrapper:
         self.log_path = os.path.join(config.log_dir, "wrapper.log")
         self.log(f"=== KiriCadence v{VERSION} started (pid={os.getpid()}) ===")
         self.log(f"[Config] {config.config_path}")
+        self.log(f"[Config] TieBreak={config.tie_break} BookDepthBonus={config.book_depth_bonus}")
 
         self.engine = EngineProxy(config.engine_path, config.engine_encoding,
                                   self.log)
@@ -440,7 +441,8 @@ class Wrapper:
             return None
 
         hit, misses = self.repo.probe(self.board, self.config.book_min_depth,
-                                      self.tie_breaker, self.rng)
+                                      self.tie_breaker, self.rng,
+                                      depth_bonus=self.config.book_depth_bonus)
         if hit is None:
             self.decisions.miss(sfen_main, self.ply, side, files=misses)
             return None
@@ -449,6 +451,8 @@ class Wrapper:
         if hit.tie_candidates > 1:
             tie = (f" tie={hit.tie_candidates}@第{hit.decided_at}応手"
                    if hit.decided_at else f" tie={hit.tie_candidates}")
+            if hit.tie_reason:
+                tie += f"({hit.tie_reason})"
         self.log(f"[Book] {hit.file_name}: {hit.usi} (value={hit.value} "
                  f"depth={hit.depth}{' flip' if hit.flipped else ''}{tie})")
         self.decisions.hit(sfen_main, self.ply, side, hit,
@@ -563,10 +567,12 @@ class Wrapper:
             self.log(f"[Config] {message}")
         if (new_config.book_min_depth != self.config.book_min_depth
                 or new_config.tie_break != self.config.tie_break
+                or new_config.book_depth_bonus != self.config.book_depth_bonus
                 or new_config.book_dir != self.config.book_dir):
             self.log(f"[Config] 再読込: BookDir={new_config.book_dir} "
                      f"BookMinDepth={new_config.book_min_depth} "
-                     f"TieBreak={new_config.tie_break}")
+                     f"TieBreak={new_config.tie_break} "
+                     f"BookDepthBonus={new_config.book_depth_bonus}")
         self.config = new_config
         self.tie_breaker = make_tie_breaker(self.config.tie_break)
 

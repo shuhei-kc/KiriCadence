@@ -10,7 +10,9 @@
 EnginePath    engine/suisho11plus/YaneuraOu_SFNN_halfka2_1024_7_64_k3k3-V970DEV_AVX512.exe
 BookDir       book
 BookMinDepth  2
-TieBreak      deep
+TieBreak      deep2
+# 不利局面だけ選択用 value + a*depth。0=無効、小数指定可（例0.5）。USI出力は元value。
+BookDepthBonus 0
 LogDir        logs
 EngineEncoding utf-8
 

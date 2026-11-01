@@ -65,6 +65,8 @@ class DecisionLogger:
             record["tie"] = tie_break
             record["tie_candidates"] = hit.tie_candidates
             record["decided_at"] = hit.decided_at
+            if hit.tie_reason:
+                record["tie_reason"] = hit.tie_reason
         if prior_misses:
             record["prior_misses"] = prior_misses
         self._write(record)
