@@ -11,18 +11,28 @@ makebook/state.db
 makebook/state.db-shm
 makebook/state.db-wal
 makebook/condenser.lock
+/codex-review/
+/sfen/
+/tournament-books/
+# このPC固有の運用・研究引継ぎ。配布用の仕様はREADME/DESIGNに記載する。
+/CLAUDE.md
 
 # ---------------------------------------------------------------------
 # 依存物 (再配布しない。各自で用意する)
 # ---------------------------------------------------------------------
 engine/
 makebook/engine/
+# BookMiner本体（上流コピー・ローカル改造コピー・同梱GUI）を追跡しない。
+/YOSC/upstream/
+/YOSC/tools/gui_native/
+/YOSC/tools/vendor/
 
 # ---------------------------------------------------------------------
 # 環境ごとの設定 (config-sample.txt を複製して作る)
 # ---------------------------------------------------------------------
 config.txt
 makebook/config.txt
+/YOSC/config/
 
 # ---------------------------------------------------------------------
 # Python
@@ -31,6 +41,19 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# ネイティブのビルド成果物・定跡・棋譜DBはソース公開に含めない。
+*.exe
+*.dll
+*.o
+*.obj
+*.lib
+*.pdb
+*.db
+*.db-shm
+*.db-wal
+*.ybb
+*.bin
 
 # ---------------------------------------------------------------------
 # エディタ / OS / 作業ログ

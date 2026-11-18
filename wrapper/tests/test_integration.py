@@ -298,11 +298,11 @@ class TestIntegration(unittest.TestCase):
         w = self.start_wrapper()
         try:
             self.handshake(w)
-            # 2回目の出現でも後手番は定跡を使い切る
+            # 後手は定跡登録局面から既出局面へ戻る合法手を優先する。
             w.send(f"position startpos moves {REP_WHITE_2}")
             w.send(GO)
             line, _ = w.read_until("bestmove")
-            self.assertEqual(line, "bestmove 4a3b")
+            self.assertEqual(line, "bestmove 8b7b")
         finally:
             w.close()
 

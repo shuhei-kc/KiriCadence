@@ -26,13 +26,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cshogi  # type: ignore
 
-from book_repo import BookRepository, board_sfen_main
+from book_repo import (BookRepository, board_sfen_main, MISS_NO_MOVES,
+                       MISS_TERMINAL_ONLY, MISS_ILLEGAL_ONLY, MISS_DEPTH_GATE)
 from config import Config, ConfigError, load_config, reload_book_settings
 from decision_log import DecisionLogger
 from engine_proxy import EngineProxy
 from selector import make_tie_breaker
 from sfen_guard import validate_sfen
 from task_emitter import TaskEmitter
+from bookminer_live import LiveBookMiner
 
 VERSION = "1.3"
 
@@ -47,6 +49,7 @@ READYOK_TIMEOUT = 180.0
 #: reader ループで連続エラーがこの回数に達したら読み取りを諦める
 #: (壊れたハンドルでの無限スピンを避ける)。
 READER_MAX_ERRORS = 20
+BOOK_PV_TIME_LIMIT_S = 0.2
 
 OWN_OPTIONS = (
     "option name BookEnabled type check default true",
@@ -54,6 +57,31 @@ OWN_OPTIONS = (
 
 #: 決定ログの一括miss理由 (§5.1)
 REASON_REPETITION = "repetition_guard"
+
+# These misses still prove that an applicable book contains this position.
+REGISTERED_BOOK_MISSES = frozenset((MISS_NO_MOVES, MISS_TERMINAL_ONLY,
+                                   MISS_ILLEGAL_ONLY, MISS_DEPTH_GATE))
+
+
+def history_return_move(board, counts, hit, misses):
+    """White may return to an exact past position with ANY legal move.
+
+    Book membership is required, but value/depth/count filters do not limit
+    the returning move. Keys include side and hands, and never use flipping.
+    """
+    if board.turn != cshogi.WHITE:
+        return None
+    if hit is None and not any(r in REGISTERED_BOOK_MISSES
+                               for r in misses.values()):
+        return None
+    # An irreversible move cannot match; on ordinary positions this is only
+    # a few dozen cheap board copies, with no further book I/O or search.
+    for usi in sorted(cshogi.move_to_usi(m) for m in board.legal_moves):
+        child = board.copy()
+        child.push_usi(usi)
+        if counts.get(board_sfen_main(child), 0):
+            return usi
+    return None
 
 
 class Wrapper:
@@ -63,6 +91,8 @@ class Wrapper:
         self.log_path = os.path.join(config.log_dir, "wrapper.log")
         self.log(f"=== KiriCadence v{VERSION} started (pid={os.getpid()}) ===")
         self.log(f"[Config] {config.config_path}")
+        self.log(f"[Config] TieBreak={config.tie_break} BookDepthBonus={config.book_depth_bonus} "
+                 f"BookPVMaxPly={config.book_pv_max_ply}")
 
         self.engine = EngineProxy(config.engine_path, config.engine_encoding,
                                   self.log)
@@ -72,6 +102,13 @@ class Wrapper:
         self.decisions = DecisionLogger(
             os.path.join(config.log_dir, "decisions.jsonl"), self.log)
         self.rng = random.Random()
+        self.live_bookminer = LiveBookMiner(config, self.log)
+        if config.bookminer_live:
+            self.log(f'[BookMinerLive] 有効: 定跡離脱を即時送信（件数制限なし） work={config.bookminer_work}')
+        self._book_probe_state = 'skip'
+        self._book_probe_hit = None
+        self._live_game_go = False
+        self._live_game_active = False
         # 対局中に勝敗が見えた時点で定跡修正タスクを積む (連携骨格)
         self.task_emitter = TaskEmitter(config.task_dir,
                                         config.task_eval_threshold,
@@ -424,6 +461,8 @@ class Wrapper:
 
     def _book_decision(self):
         """定跡判定のみ。(info行list, usi手) を返す。無ければ None。"""
+        self._book_probe_state = 'skip'
+        self._book_probe_hit = None
         if not self.book_enabled:
             return None
         sfen_main = board_sfen_main(self.board)
@@ -431,7 +470,7 @@ class Wrapper:
         side = "b" if is_black else "w"
 
         # §5.1 千日手: 先手番で既出2回目以降の局面は定跡フル無視。
-        # 後手番は千日手歓迎なので定跡を使い切る。
+        # 後手番は、定跡登録局面なら既出局面へ戻る合法手を優先する。
         if is_black and self.position_counts.get(sfen_main, 0) >= 2:
             self.log(f"[Book] 既出局面 (x{self.position_counts[sfen_main]}) "
                      f"のため先手は定跡を無視 (千日手回避)")
@@ -440,9 +479,33 @@ class Wrapper:
             return None
 
         hit, misses = self.repo.probe(self.board, self.config.book_min_depth,
-                                      self.tie_breaker, self.rng)
+                                      self.tie_breaker, self.rng,
+                                      depth_bonus=self.config.book_depth_bonus)
+        returning = history_return_move(self.board, self.position_counts,
+                                        hit, misses)
+        if returning is not None:
+            child = self.board.copy()
+            child.push_usi(returning)
+            target = board_sfen_main(child)
+            source = (hit.file_name if hit is not None else
+                      next(name for name, reason in misses.items()
+                           if reason in REGISTERED_BOOK_MISSES))
+            self.log(f"[Book] 既出局面へ合流: {returning} "
+                     f"(既出{self.position_counts[target]}回 book={source})")
+            self.decisions.history_return(sfen_main, self.ply, side,
+                                          returning, source, target,
+                                          self.position_counts[target])
+            # This is a deliberate book policy, not a book exit. No fabricated
+            # value is attached to an unregistered move, and no depth0 tasks
+            # are generated against the value of the displaced book move.
+            self._book_probe_state = 'hit'
+            pv = ' '.join(self._book_pv(returning))
+            return ([f"info pv {pv} string Book_History_Return book={source}"],
+                    returning)
         if hit is None:
             self.decisions.miss(sfen_main, self.ply, side, files=misses)
+            if misses and not any(r in ('io_error','unsorted','illegal_only') for r in misses.values()):
+                self._book_probe_state = 'miss'
             return None
 
         tie = ""
@@ -455,10 +518,53 @@ class Wrapper:
                  f"depth={hit.depth}{' flip' if hit.flipped else ''}{tie})")
         self.decisions.hit(sfen_main, self.ply, side, hit,
                            self.tie_breaker.name, prior_misses=misses)
+        self._book_probe_state = 'hit'
+        self._book_probe_hit = hit
+        pv = ' '.join(self._book_pv(hit.usi))
         return ([f"info multipv 1 score cp {hit.value} depth {hit.depth} "
-                 f"nodes 0 pv {hit.usi} string Book_Hit"
+                 f"nodes 0 pv {pv} string Book_Hit"
                  f"{'_Flipped' if hit.flipped else ''} "
                  f"book={hit.file_name}"], hit.usi)
+
+    def _book_pv(self, first_move):
+        """Display-only continuation: ordinary selection on copied game state."""
+        line = [first_move]
+        if self.config.book_pv_max_ply <= 1:
+            return line
+        try:
+            deadline = time.perf_counter() + BOOK_PV_TIME_LIMIT_S
+            board = self.board.copy()
+            counts = self.position_counts.copy()
+            rng = random.Random()
+            rng.setstate(self.rng.getstate())
+            seen = {board_sfen_main(board)}
+            board.push_usi(first_move)
+            counts[board_sfen_main(board)] += 1
+            while len(line) < self.config.book_pv_max_ply and time.perf_counter() < deadline:
+                key = board_sfen_main(board)
+                if board.is_game_over() or key in seen:
+                    break
+                if board.turn == cshogi.BLACK and counts[key] >= 2:
+                    break
+                seen.add(key)
+                hit, misses = self.repo.probe(board, self.config.book_min_depth,
+                                         self.tie_breaker, rng,
+                                         depth_bonus=self.config.book_depth_bonus)
+                returning = history_return_move(board, counts, hit, misses)
+                if returning is None and hit is None:
+                    break
+                usi = returning if returning is not None else hit.usi
+                move = board.move_from_usi(usi)
+                if not move or not board.is_legal(move):
+                    break
+                board.push(move)
+                line.append(usi)
+                counts[board_sfen_main(board)] += 1
+        except Exception as exc:
+            # A display lookup must never change the chosen move or fall
+            # through to engine search. No decision/task hooks are called.
+            self.log(f'[BookPV] 読み筋の延長を終了: {exc!r}')
+        return line
 
     def _try_book(self) -> bool:
         """定跡から指せたら True (GUIへ info+bestmove 送信済み)。"""
@@ -521,6 +627,10 @@ class Wrapper:
             self.repo.refresh(self.config.book_dir)  # book差し替え反映 (§4.4)
             self.decisions.newgame()
             self.task_emitter.newgame()
+            self.live_bookminer.configure(self.config)
+            self.live_bookminer.newgame()
+            self._live_game_go = False
+            self._live_game_active = True
             self.engine.send(line)
 
         elif cmd == "setoption":
@@ -551,6 +661,7 @@ class Wrapper:
 
         elif cmd == "gameover":
             self._abandon_search("gameover")
+            self._live_game_active = False
             self.decisions.gameover(parts[1] if len(parts) > 1 else "")
             self.engine.send(line)
 
@@ -565,10 +676,14 @@ class Wrapper:
             self.log(f"[Config] {message}")
         if (new_config.book_min_depth != self.config.book_min_depth
                 or new_config.tie_break != self.config.tie_break
+                or new_config.book_depth_bonus != self.config.book_depth_bonus
+                or new_config.book_pv_max_ply != self.config.book_pv_max_ply
                 or new_config.book_dir != self.config.book_dir):
             self.log(f"[Config] 再読込: BookDir={new_config.book_dir} "
                      f"BookMinDepth={new_config.book_min_depth} "
-                     f"TieBreak={new_config.tie_break}")
+                     f"TieBreak={new_config.tie_break} "
+                     f"BookDepthBonus={new_config.book_depth_bonus} "
+                     f"BookPVMaxPly={new_config.book_pv_max_ply}")
         self.config = new_config
         self.tie_breaker = make_tie_breaker(self.config.tie_break)
 
@@ -602,6 +717,8 @@ class Wrapper:
         self._abandon_search("new go")   # 通常来ないが残骸探索の安全網
         special = any(tok in ("infinite", "mate", "ponder")
                       for tok in parts[1:])
+        self._live_game_go = (not any(tok in ('infinite','mate') for tok in parts[1:])
+                              and any(tok in ('btime','wtime','byoyomi','movetime') for tok in parts[1:]))
         # 検討モードの評価値は対局と無関係なのでタスク投入の対象外にする
         self.task_emitter.set_game_search(
             not any(tok in ("infinite", "mate") for tok in parts[1:]))
@@ -609,7 +726,9 @@ class Wrapper:
             # fail-safe: 定跡側の予期しない例外は「定跡ミス」として
             # エンジンに思考させる。wrapperのバグで対局を壊さない (§8)。
             try:
-                if self._try_book():
+                hit = self._try_book()
+                self._observe_live_bookminer()
+                if hit:
                     return  # 定跡ヒット: エンジンには何も転送しない
             except Exception as e:
                 self.log(f"[Book] 予期しないエラー "
@@ -641,13 +760,24 @@ class Wrapper:
             self.log("[Wrapper] ponderhit: 定跡ヒット、探索を放棄して即指し")
             self._abandon_search("ponderhit book hit")
             self.send_gui(*info_lines, f"bestmove {usi}")
+            self._observe_live_bookminer()
             return
         with self.state_lock:
             searching = (self.state == SEARCH)
         if searching:
             self.engine.send("ponderhit")
+            self._observe_live_bookminer()
         else:
             self.log("[Wrapper] 探索なしのponderhitを無視")
+
+    def _observe_live_bookminer(self):
+        if not self._live_game_active or not self._live_game_go or not self.tracking_ok or not self.last_position_cmd:return
+        try:
+            self.live_bookminer.observe(self._book_probe_state,self.last_position_cmd,
+                                       self.board.sfen(),self.decisions.game_id,
+                                       hit=self._book_probe_hit)
+        except Exception as exc:
+            self.log(f'[BookMinerLive] 記録失敗（対局は続行）: {exc!r}')
 
 
 def harden_stdio() -> None:

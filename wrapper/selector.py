@@ -1,6 +1,6 @@
 """採用手の選択・タイブレーク (DESIGN.md §6)。差し替え可能な独立層。
 
-book_repo が §5.3 のフィルタを通した「value 最大かつ depth 充足」の候補集合
+book_repo が §5.3 のフィルタを通した「選択用スコア最大かつ depth 充足」の候補集合
 から1手選ぶ。選択ロジックは模索中なので、この層だけで完結して差し替え
 られるよう、TieBreaker プロトコル + 登録制にしている。
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 import random
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Callable, Protocol
 
 import cshogi  # type: ignore
@@ -28,6 +29,23 @@ class Candidate:
     count: int = 1   # 採用回数 (定跡の5列目)。makebook 系の補強回数
 
 
+SelectionScore = int | Decimal
+
+
+def selection_scores(candidates: list[Candidate], depth_bonus: float = 0) -> list[SelectionScore]:
+    """Selection only: disadvantaged position means its RAW best value < 0.
+
+    Values are side-to-move scores for both direct and flipped book probes.
+    Keep Candidate.value intact for USI output, logging and task thresholds.
+    """
+    disadvantaged = bool(candidates) and max(c.value for c in candidates) < 0
+    if not disadvantaged or not depth_bonus:
+        return [c.value for c in candidates]
+    # Decimal arithmetic keeps decimal ties exact so deep2 still handles them.
+    bonus = Decimal(str(depth_bonus))
+    return [c.value + bonus*c.depth for c in candidates]
+
+
 class ProbeContext:
     """タイブレーカーへ渡す照会文脈。
 
@@ -37,10 +55,11 @@ class ProbeContext:
 
     def __init__(self, full_sfen: str,
                  probe_replies: Callable[[str], list[Candidate]],
-                 rng: random.Random):
+                 rng: random.Random, depth_bonus: float = 0):
         self._full_sfen = full_sfen
         self.probe_replies = probe_replies
         self.rng = rng
+        self.depth_bonus = depth_bonus
 
     def child_sfen_main(self, usi: str) -> str | None:
         """usi を指した先の手数なしSFEN。進められなければ None。"""
@@ -84,7 +103,7 @@ class RandomTieBreaker:
         return ctx.rng.choice(candidates), 0, "random"
 
 
-def _compare_replies(lhs: list[int], rhs: list[int]) -> int:
+def _compare_replies(lhs: list[SelectionScore], rhs: list[SelectionScore]) -> int:
     """相手の応手 value 列 (良い順) を突き合わせ、どちらが自分に得かを返す。
 
     値は相手視点なので**小さいほど自分に得**。先頭 (相手の最善応手) から
@@ -107,7 +126,7 @@ def _compare_replies(lhs: list[int], rhs: list[int]) -> int:
     return -rank if len(lhs) < len(rhs) else rank
 
 
-def _compare_replies_run(lhs: list[int], rhs: list[int],
+def _compare_replies_run(lhs: list[SelectionScore], rhs: list[SelectionScore],
                          n: int) -> tuple[int, bool]:
     """deep{n} の2候補比較。(値, n 連続で決まったか)。
 
@@ -133,13 +152,14 @@ def _compare_replies_run(lhs: list[int], rhs: list[int],
 
 
 def _reply_profiles(candidates, ctx
-                    ) -> list[tuple[Candidate, list[int] | None]]:
+                    ) -> list[tuple[Candidate, list[SelectionScore] | None]]:
     """各候補の (候補, 相手の応手 value 列 (良い順) または None=定跡外)。"""
-    profiles: list[tuple[Candidate, list[int] | None]] = []
+    profiles: list[tuple[Candidate, list[SelectionScore] | None]] = []
     for cand in candidates:
         key = ctx.child_sfen_main(cand.usi)
         replies = ctx.probe_replies(key) if key is not None else []
-        values = [r.value for r in replies] if replies else None
+        values = (sorted(selection_scores(replies, ctx.depth_bonus), reverse=True)
+                  if replies else None)
         profiles.append((cand, values))
     return profiles
 

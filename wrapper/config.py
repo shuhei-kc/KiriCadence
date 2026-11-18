@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import math
 from dataclasses import dataclass, replace
 
 CONFIG_ENV = "KIRICADENCE_CONFIG"
@@ -27,6 +28,10 @@ DEFAULTS = {
     "BookDir": "book",
     "BookMinDepth": "1",
     "TieBreak": "deep2",
+    "BookDepthBonus": "0",  # 不利局面だけの選択用 value + a*depth。出力valueは不変。
+    "BookPVMaxPly": "8",    # 採用手を含む定跡読み筋の最大手数。
+    "BookMinerLive": "0",
+    "BookMinerWork": "YOSC/runtime/gui",
     # 定跡修正システムへの連携 (空なら無効)。対局中に自分の評価値が
     # TaskEvalThreshold を超えたら、その時点の棋譜をタスクとして書き出す。
     "TaskDir": "",
@@ -36,7 +41,7 @@ DEFAULTS = {
 }
 
 #: usinewgame ごとに再読込するキー (それ以外は起動時のみ)
-RELOADABLE_KEYS = ("BookDir", "BookMinDepth", "TieBreak")
+RELOADABLE_KEYS = ("BookDir", "BookMinDepth", "TieBreak", "BookDepthBonus", "BookPVMaxPly", "BookMinerLive", "BookMinerWork")
 
 
 class ConfigError(Exception):
@@ -56,6 +61,10 @@ class Config:
     task_dir: str
     task_eval_threshold: int
     task_emit_on: str
+    book_depth_bonus: float = 0
+    bookminer_live: bool = False
+    bookminer_work: str = ""
+    book_pv_max_ply: int = 8
 
 
 def parse_option_text(text: str) -> tuple[dict[str, str], list[str]]:
@@ -109,6 +118,32 @@ def _validate_threshold(raw: str) -> int:
         raise ConfigError(f"TaskEvalThreshold は整数が必要: {raw!r}")
     if value < 0:
         raise ConfigError(f"TaskEvalThreshold は 0 以上が必要: {value}")
+    return value
+
+
+def _validate_depth_bonus(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ConfigError(f"BookDepthBonus は0以上の有限の数値が必要: {raw!r}")
+    if not math.isfinite(value) or value < 0:
+        raise ConfigError(f"BookDepthBonus は0以上の有限の数値が必要: {raw!r}")
+    return value
+
+
+def _validate_live(raw: str) -> bool:
+    if raw.lower() not in ('0', '1', 'false', 'true'):
+        raise ConfigError(f'BookMinerLive は0/1またはfalse/trueが必要: {raw!r}')
+    return raw.lower() in ('1', 'true')
+
+
+def _validate_book_pv_max_ply(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f'BookPVMaxPly は1以上の整数が必要: {raw!r}')
+    if value < 1:
+        raise ConfigError(f'BookPVMaxPly は1以上の整数が必要: {raw!r}')
     return value
 
 
@@ -166,6 +201,10 @@ def load_config(path: str | None = None) -> tuple[Config, list[str]]:
         task_dir=_resolve(base_dir, values["TaskDir"]),
         task_eval_threshold=_validate_threshold(values["TaskEvalThreshold"]),
         task_emit_on=_validate_emit_on(values["TaskEmitOn"]),
+        book_depth_bonus=_validate_depth_bonus(values["BookDepthBonus"]),
+        bookminer_live=_validate_live(values["BookMinerLive"]),
+        bookminer_work=_resolve(base_dir, values["BookMinerWork"]),
+        book_pv_max_ply=_validate_book_pv_max_ply(values["BookPVMaxPly"]),
     )
     return config, warnings
 
@@ -184,6 +223,11 @@ def reload_book_settings(config: Config) -> tuple[Config, list[str]]:
 
     raw, warnings = parse_option_text(text)
     updated = config
+    if "BookMinerLive" in raw:
+        try: updated = replace(updated, bookminer_live=_validate_live(raw["BookMinerLive"]))
+        except ConfigError as e: warnings.append(f'{e} (前の値を維持)')
+    if raw.get("BookMinerWork"):
+        updated = replace(updated, bookminer_work=_resolve(config.base_dir, raw["BookMinerWork"]))
 
     if "BookDir" in raw and raw["BookDir"]:
         updated = replace(updated,
@@ -201,4 +245,14 @@ def reload_book_settings(config: Config) -> tuple[Config, list[str]]:
                               tie_break=_validate_tie_break(raw["TieBreak"]))
         except ConfigError as e:
             warnings.append(f"{e} (前の値 {config.tie_break!r} を維持)")
+    if "BookDepthBonus" in raw:
+        try:
+            updated = replace(updated, book_depth_bonus=_validate_depth_bonus(raw["BookDepthBonus"]))
+        except ConfigError as e:
+            warnings.append(f"{e} (前の値 {config.book_depth_bonus} を維持)")
+    if "BookPVMaxPly" in raw:
+        try:
+            updated = replace(updated, book_pv_max_ply=_validate_book_pv_max_ply(raw['BookPVMaxPly']))
+        except ConfigError as e:
+            warnings.append(f'{e} (前の値 {config.book_pv_max_ply} を維持)')
     return updated, warnings

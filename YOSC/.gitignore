@@ -1,0 +1,8 @@
+upstream/
+data/
+runtime/
+releases/
+reports/
+*.html
+*.log
+__pycache__/

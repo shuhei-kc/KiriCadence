@@ -93,7 +93,8 @@ def run_probe(config, position_arg, sfen_arg) -> int:
     hit, misses = repo.probe(board, config.book_min_depth,
                              make_tie_breaker(config.tie_break),
                              random.Random(0),
-                             trace=lambda m: print(f"  {m}"))
+                             trace=lambda m: print(f"  {m}"),
+                             depth_bonus=config.book_depth_bonus)
     for name, reason in misses.items():
         print(f"  {name}: ミス ({reason})")
     if hit is None:

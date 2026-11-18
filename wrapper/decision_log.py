@@ -71,6 +71,14 @@ class DecisionLogger:
             record["prior_misses"] = prior_misses
         self._write(record)
 
+    def history_return(self, sfen: str, ply: int, side: str, move: str,
+                       file: str, target: str, occurrences: int) -> None:
+        """A history-based choice has no asserted engine/book evaluation."""
+        self._ensure_game()
+        self._write({"event": "history_return", "sfen": sfen, "ply": ply,
+                     "side": side, "move": move, "file": file,
+                     "return_sfen": target, "previous_occurrences": occurrences})
+
     def miss(self, sfen: str, ply: int, side: str,
              files: dict[str, str] | None = None,
              reason: str | None = None) -> None:

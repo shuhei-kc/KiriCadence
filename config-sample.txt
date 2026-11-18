@@ -5,12 +5,20 @@
 #
 # 形式はやねうら王 Option 系の `名前 値` (1行1項目)。# 始まりはコメント。
 # 相対パスはこのファイルの場所が基準。
-# BookDir / BookMinDepth / TieBreak は usinewgame ごとに再読込される。
+# BookDir / BookMinDepth / TieBreak / BookDepthBonus / BookPVMaxPly / BookMinerLive / BookMinerWork は usinewgame ごとに再読込される。
 
 EnginePath    engine/suisho11plus/YaneuraOu_SFNN_halfka2_1024_7_64_k3k3-V970DEV_AVX512.exe
 BookDir       book
 BookMinDepth  2
 TieBreak      deep2
+# 不利局面だけ選択用 value + a*depth。0=無効、小数指定可（例0.5）。USI出力は元value。
+BookDepthBonus 0
+# 採用手を含む読み筋の上限。1で従来の１手表示。usinewgameで再読込。
+BookPVMaxPly 8
+# 自戦で定跡を外れた最初の局面を既存BookMiner GUIへ送る（件数制限なし）。
+# 次の定跡復帰→外れで再び送る。検討・予測ponder・同じ局面の重複は除外。
+BookMinerLive 0
+BookMinerWork YOSC/runtime/gui
 LogDir        logs
 EngineEncoding utf-8
 
